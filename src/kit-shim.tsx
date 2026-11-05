@@ -16,7 +16,15 @@ function read<T>(key: string, init: T): T {
 }
 
 export function useLocalState<T>(key: string, init: T): [T, (v: T | ((p: T) => T)) => void, boolean] {
-  const [value, setValue] = useState<T>(() => read(key, init));
+  const initRef = useRef(init);
+  const [value, setValue] = useState<T>(() => read(key, initRef.current));
+  const [prevKey, setPrevKey] = useState(key);
+  if (prevKey !== key) {
+    // Account (or any key-part) changed: drop the previous key's in-memory state
+    // and load the state that actually belongs to the new key.
+    setPrevKey(key);
+    setValue(read(key, initRef.current));
+  }
   const ref = useRef(value); ref.current = value;
   const set = useCallback((v: T | ((p: T) => T)) => {
     setValue(prev => {

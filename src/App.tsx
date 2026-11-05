@@ -59,6 +59,9 @@ const newNote = (type: 'text' | 'list'): Note => ({
   bg: null, locked: false, pinned: false, attachments: [],
   createdAt: Date.now(), updatedAt: Date.now(),
 });
+async function blobToDataUrl(b: Blob): Promise<string> {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(b); });
+}
 const hasContent = (n: Note) => n.title.trim() || n.body.trim() || n.items.some(i => i.text.trim()) || (n.attachments?.length ?? 0) > 0;
 
 const IcLock = () => <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>;
@@ -251,6 +254,51 @@ export function App() {
     return () => window.removeEventListener('beforeinstallprompt', h);
   }, []);
   const isIOS = typeof navigator !== 'undefined' && /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const importRef = useRef<HTMLInputElement>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const doExport = async () => {
+    setMenu(false); setBackupBusy(true);
+    try {
+      const out: any = { app: 'hirals-notes', version: 1, user, exportedAt: new Date().toISOString(), lockCfg, notes: [] as any[] };
+      for (const n of notes) {
+        const atts: any[] = [];
+        for (const a of n.attachments ?? []) {
+          const b = await mediaStore.get(a.id).catch(() => null);
+          atts.push(b ? { ...a, data: await blobToDataUrl(b) } : { ...a });
+        }
+        out.notes.push({ ...n, attachments: atts });
+      }
+      const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const el = document.createElement('a');
+      el.href = url; el.download = 'hirals-notes-' + user + '-' + new Date().toISOString().slice(0, 10) + '.json';
+      el.click(); URL.revokeObjectURL(url);
+    } catch { alert('Backup failed - sorry! Please try again.'); }
+    setBackupBusy(false);
+  };
+  const doImport = async (f: File | null) => {
+    if (!f) return;
+    setBackupBusy(true);
+    try {
+      const data = JSON.parse(await f.text());
+      if (data.app !== 'hirals-notes' || !Array.isArray(data.notes)) throw new Error('bad file');
+      const imported: Note[] = [];
+      for (const n of data.notes) {
+        const atts: Attachment[] = [];
+        for (const a of n.attachments ?? []) {
+          if (a.data) { try { const b = await (await fetch(a.data)).blob(); await mediaStore.put(a.id, b); } catch {} }
+          atts.push({ id: a.id, kind: a.kind, name: a.name });
+        }
+        imported.push({ ...n, attachments: atts });
+      }
+      const byId = new Map(notes.map(n => [n.id, n] as const));
+      imported.forEach(n => byId.set(n.id, n));
+      setNotes(Array.from(byId.values()));
+      if (!lockCfg && data.lockCfg) setLockCfg(data.lockCfg);
+      alert('Restored ' + imported.length + (imported.length === 1 ? ' note' : ' notes') + ' into @' + user + '.');
+    } catch { alert("That file doesn't look like a Hiral's Notes backup."); }
+    setBackupBusy(false);
+  };
   const [openId, setOpenId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [grid, setGrid] = useState(true);
@@ -324,7 +372,9 @@ export function App() {
             <div className="menu-user">@{user}</div>
             {fullWeb && installEvt && <button className="menu-item" style={{ color: 'var(--acc)' }} onClick={async () => { setMenu(false); try { await installEvt.prompt(); } catch {} setInstallEvt(null); }}>⬇️ Install app</button>}
             {fullWeb && !installEvt && isIOS && <button className="menu-item" style={{ color: 'var(--acc)' }} onClick={() => { setMenu(false); alert('In Safari: tap the Share button, then "Add to Home Screen".'); }}>⬇️ Add to Home Screen</button>}
-            <button className="menu-item" onClick={() => { setMenu(false); setUnlocked(new Set()); setOpenId(null); setSession(null); }}>Log out / switch account</button>
+            <button className="menu-item" disabled={backupBusy} onClick={doExport}>💾 Back up my notes</button>
+            <button className="menu-item" disabled={backupBusy} onClick={() => { setMenu(false); importRef.current?.click(); }}>📥 Restore from backup</button>
+            <button className="menu-item" onClick={() => { setMenu(false); setUnlocked(new Set()); setOpenId(null); setSearch(''); setSession(null); }}>Log out / switch account</button>
           </div>
         </div>}
         <div className="create-row">
@@ -340,6 +390,7 @@ export function App() {
             {visible.map(n => <NoteCard key={n.id} n={n} unlocked={unlocked.has(n.id)} onOpen={() => openNote(n)} />)}
           </div>}
       </>}
+      <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={e => { doImport(e.target.files?.[0] ?? null); e.target.value = ''; }} />
       {flow && <LockModal flow={flow} onFlow={setFlow} onClose={() => setFlow(null)}
         onUnlock={id => { setUnlocked(s => new Set(s).add(id)); setOpenId(id); }}
         cfg={lockCfg} setCfg={c => setLockCfg(c)} />}
